@@ -171,7 +171,7 @@ classify_and_sanitize() {
   check_gff3_structure "$INPUT_ANNO"
 
   if [ "$NEEDS_SANITIZE" == "NO" ]; then
-    echo "=== [2/N] Genome names are already safe -- using original files directly ==="
+    echo "=== Genome names are already safe -- using original files directly ==="
     GFA_OUT="$GENOME_FA"
     GTF_OUT="$INPUT_ANNO"
     SANITIZED=0
