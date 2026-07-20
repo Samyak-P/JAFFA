@@ -223,7 +223,7 @@ build_tab_file() {
   echo "=== Building .tab gene coordinate table ==="
   if [ ! -f "$TAB_FILE" ]; then
     "$TOOLS/gtfToGenePred" "$GTF" "$GPD_FILE" -genePredExt -geneNameAsName2
-    awk 'BEGIN{print "#bin\tname\tchrom\tstrand\ttxStart\ttxEnd\tcdsStart\tcdsEnd\texonCount\texonStarts\texonEnds\tscore\tname2\tcdsStartStat\tcdsEndStat\texonFrames"} {print "1\t"$0}' "$GPD_FILE" > "$TAB_FILE"
+    awk 'BEGIN{FS=OFS="\t"; print "#bin\tname\tchrom\tstrand\ttxStart\ttxEnd\tcdsStart\tcdsEnd\texonCount\texonStarts\texonEnds\tscore\tname2\tcdsStartStat\tcdsEndStat\texonFrames"} {sub(/\.[0-9]+$/,"",$1); print "1",$0}' "$GPD_FILE" > "$TAB_FILE"
   fi
 }
 
