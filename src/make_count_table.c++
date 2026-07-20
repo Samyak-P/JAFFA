@@ -92,7 +92,15 @@ int main(int argc, char **argv){
   string current_read="";
   //  string line;
   set<string> matched_genes;
-    
+
+  // anno_prefix comes from argv and is constant for the whole run, so compile
+  // the regex once here rather than reconstructing it on every read (regex
+  // construction is far more expensive than a match).
+  string anno_reg=argv[2];
+  bool have_anno_re = !anno_reg.empty();
+  regex anno_re;
+  if(have_anno_re) anno_re = regex(anno_reg);
+
   while(getline(std::cin,line) ){
     istringstream line_stream(line);
     string read, transcript;
@@ -107,12 +115,58 @@ int main(int argc, char **argv){
     }
 
     current_read = read;
-    
-    smatch m; //extract the transcript ID from the fasta header
-    string anno_reg=argv[2];
-    if(regex_search(transcript,m,regex(anno_reg))){
-      string gene=trans_gene_map[m[1].str()];
-      matched_genes.insert(gene);
+
+    // Resolve `transcript` (the raw SAM subject ID) to a real transcript
+    // ID that exists as a key in trans_gene_map, using the same validated
+    // fallback chain as extract_trans_id() / make_simple_read_table.c++.
+    // The old code did `trans_gene_map[m[1].str()]` unconditionally --
+    // std::map::operator[] default-constructs an empty string for any
+    // missing key, so an unresolved (or wrongly-extracted, e.g. via a
+    // permissive anno_prefix like "(.*)") ID silently produced gene=""
+    // instead of skipping the read, corrupting every count.
+    string trans_id = transcript; // default: Strategy 3, unresolved passthrough
+    bool resolved = false;
+
+    // Strategy 1: configured anno_prefix regex, but only trust the match
+    // if it resolves to a real transcript ID. A greedy pattern like "(.*)"
+    // will always "match" without producing a usable ID.
+    if(have_anno_re){
+      smatch m;
+      if(regex_search(transcript, m, anno_re) && m.size() > 1){
+        string candidate = m[1].str();
+        if(trans_gene_map.count(candidate)){
+          trans_id = candidate;
+          resolved = true;
+        }
+      }
+    }
+
+    // Strategy 2: legacy UCSC-style headers with embedded __range= coords.
+    if(!resolved){
+      size_t range_pos = transcript.find("__range=");
+      if(range_pos != string::npos){
+        string before_range = transcript.substr(0, range_pos);
+        size_t last_underscore = before_range.rfind('_');
+        if(last_underscore != string::npos){
+          string candidate = before_range.substr(last_underscore+1);
+          if(trans_gene_map.count(candidate)){
+            trans_id = candidate;
+            resolved = true;
+          }
+        }
+        if(!resolved && trans_gene_map.count(before_range)){
+          trans_id = before_range;
+          resolved = true;
+        }
+      }
+    }
+    // Strategy 3 (default set above): plain transcript ID, no embedded
+    // coordinates -- used as-is when Strategies 1 and 2 don't resolve.
+
+    // Only count reads that actually resolve to a known transcript --
+    // never insert an empty-string "gene" for unresolved IDs.
+    if(trans_gene_map.count(trans_id)){
+      matched_genes.insert(trans_gene_map[trans_id]);
     }
   }
   // Flush the final read

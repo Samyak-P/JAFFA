@@ -77,8 +77,11 @@ transLength=100 //the minimum length for Oases to report an assembled contig
 blast_options="-perc_identity 96"
 // number of lines from fasta to process at a time for blastn (#reads*2). This reduces the memory required.
 blast_batch_size=1000000
+//comma separated list of chromosomes to exclude from final fusion calls
+//(e.g. mitochondrial contigs). Override at runtime with -p excludeChroms=...
+excludeChroms="chrM,chrMT,MT,M,chrMito,mitochondrion,Mito,MtDNA"
 //pattern used to fetch transcript ID within reference transcritome FA
-anno_prefix="\'V[[:alnum:]]+_(.+?)__range=\'" 
+anno_prefix="'(.*)'"
 
 //for aligning candidate fusions against the genome
 blat_options="-minIdentity=96 -minScore=30"
@@ -137,7 +140,7 @@ run_check = {
         exec """
             echo "Running JAFFA version $VERSION" ;
             echo "Checking for required data files..." ;
-            for i in $transFasta $transTable $knownTable $genomeFasta ${maskedGenome}.1.bt2 ${transFasta.prefix}.1.bt2 ; 
+            for i in $transFasta $transTable $knownTable $genomeFasta ${maskedGenome}.1.bt2 ${transFasta.prefix}.1.bt2 ;
                  do ls $i 2>/dev/null || { echo "CAN'T FIND ${i}..." ; 
             echo "PLEASE DOWNLOAD and/or FIX PATH... STOPPING NOW" ; exit 1  ; } ; done ;
             echo "All looking good" ;
@@ -485,7 +488,7 @@ get_final_list = {
  		else 
                    $make_final_table $input1 $input2 $input3 $transTable  
 		   $knownTable_Mitelman $knownTable_Cosmic $knownTable_CosmicTier $knownTable_GTEx
-		   $finalGapSize $exclude $reassign_dist $output;
+		   $finalGapSize $exclude $reassign_dist $excludeChroms $output;
 		 fi;
             ""","get_final_list"
         }
@@ -505,7 +508,8 @@ compile_all_results = {
         exec """
 	    $compile_results $output2.prefix $inputs.summary ;
             rm -f $output1;
-            while read line; do $get_fusion_seqs \$line $output1 ; done < $output2;
+            touch $output1;
+            tail -n +2 $output2 | while read line; do $get_fusion_seqs \$line $output1 ; done;
 
             echo "Done writing $output1";
             echo "All Done." ;

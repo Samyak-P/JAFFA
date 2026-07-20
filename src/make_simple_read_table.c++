@@ -64,7 +64,8 @@ int main(int argc, char **argv){
   vector< pair<string,string> > fusion_list;
   vector< string > genes_of_interest;
   // read in the table of candidate fusions
-  while ( getline (file,line) ){ 
+  const regex fusion_id_re("(.*):(.*)"); // constant pattern, compile once
+  while ( getline (file,line) ){
     fusion_candidate new_cand;
     istringstream line_stream(line);
     line_stream >> new_cand.read;
@@ -72,8 +73,8 @@ int main(int argc, char **argv){
     line_stream >> new_cand.break_max;
     string temp;
     line_stream >> temp;
-    smatch m; //extract the gene id 
-    regex_search(temp,m,regex("(.*):(.*)"));
+    smatch m; //extract the gene id
+    regex_search(temp,m,fusion_id_re);
     //    if(m[1].str()<m[2].str())
       new_cand.fusion=make_pair(m[1].str(), m[2].str());
       //    else
@@ -128,6 +129,15 @@ int main(int argc, char **argv){
   file.close();
   cerr << "Done reading in transcript IDs" << endl;
 
+  // Flat set of every transcript ID we actually care about (i.e. every
+  // value in gene_trans_map), used below to validate extracted IDs before
+  // trusting them -- the same principle as extract_trans_id() in
+  // process_transcriptome_align_table.c++.
+  unordered_set<string> valid_trans_ids;
+  for(auto const& kv : gene_trans_map)
+    for(auto const& t : kv.second)
+      valid_trans_ids.insert(t);
+
   /** 
    ** Now read in the mapped reads
    **/
@@ -147,12 +157,57 @@ int main(int argc, char **argv){
   cerr << "Done reading in bam file" << endl;
   // Loop over all the trans_read_map and fix the names:
   string anno_reg=argv[3];
+  // anno_reg is constant for the whole run, so compile the regex once here
+  // rather than reconstructing it for every entry in the loop below.
+  bool have_anno_re = !anno_reg.empty();
+  regex anno_re;
+  if(have_anno_re) anno_re = regex(anno_reg);
   unordered_map< string, vector< pair < string, bool > > > trans_read_map_fixed;
   auto tr_itr=trans_read_map.begin();
   for(;tr_itr!=trans_read_map.end() ; tr_itr++){
-    smatch m;
-    regex_search(tr_itr->first,m,regex(anno_reg)); 
-    trans_read_map_fixed[m[1].str()]=tr_itr->second;
+    const string& subject_id = tr_itr->first;
+    string key = subject_id; // default: Strategy 3, unresolved passthrough
+
+    // Strategy 1: configured anno_prefix regex, but only trust the match
+    // if it resolves to a real transcript ID. A permissive/greedy prefix
+    // like "(.*)" will always "match" without producing a usable ID, so
+    // unconditionally trusting it (the old behaviour) breaks any BAM
+    // aligned against UCSC-style "__range=" headers.
+    bool resolved = false;
+    if(have_anno_re){
+      smatch m;
+      if(regex_search(subject_id, m, anno_re) && m.size() > 1){
+        string candidate = m[1].str();
+        if(valid_trans_ids.count(candidate)){
+          key = candidate;
+          resolved = true;
+        }
+      }
+    }
+
+    // Strategy 2: legacy UCSC-style headers with embedded __range= coords.
+    if(!resolved){
+      size_t range_pos = subject_id.find("__range=");
+      if(range_pos != string::npos){
+        string before_range = subject_id.substr(0, range_pos);
+        size_t last_underscore = before_range.rfind('_');
+        if(last_underscore != string::npos){
+          string candidate = before_range.substr(last_underscore+1);
+          if(valid_trans_ids.count(candidate)){
+            key = candidate;
+            resolved = true;
+          }
+        }
+        if(!resolved && valid_trans_ids.count(before_range)){
+          key = before_range;
+          resolved = true;
+        }
+      }
+    }
+    // Strategy 3 (default set above): plain transcript ID, no embedded
+    // coordinates -- used as-is when Strategies 1 and 2 don't resolve.
+
+    trans_read_map_fixed[key]=tr_itr->second;
   }
   trans_read_map.clear();
   cerr << "Done getting trans ids" << endl;

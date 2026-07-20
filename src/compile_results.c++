@@ -112,8 +112,26 @@ int main(int argc, char* argv[]) {
     }
 
     if (valid_files.empty()) {
-        cerr << "No valid summary files found.\n";
-        return 1;
+        cerr << "No fusions found in any sample. Writing empty results file.\n";
+        vector<string> column_order = {
+            "sample","fusion genes","chrom1","base1","strand1",
+            "chrom2","base2","strand2",
+            "gap (kb)","spanning pairs","spanning reads",
+            "inframe","aligns","rearrangement",
+            "contig","contig break",
+            "classification","geneCounts1","geneCounts2",
+            "known mitelman","known cosmic",
+            "cosmic tier","gtex samples"
+        };
+        string output_file = out_name + ".csv";
+        ofstream out(output_file);
+        for (size_t i = 0; i < column_order.size(); ++i) {
+            out << column_order[i];
+            if (i + 1 < column_order.size()) out << ",";
+        }
+        out << "\n";
+        cout << "Done writing output " << output_file << "\n";
+        return 0;
     }
 
     /******************************************************************

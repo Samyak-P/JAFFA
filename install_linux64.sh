@@ -12,7 +12,7 @@ mkdir -p tools/bin
 cd tools 
 
 #a list of which programs need to be installed
-commands="bpipe velveth velvetg oases trimmomatic samtools bowtie2 blat dedupe reformat  blastn bedtools minimap2 process_transcriptome_align_table make_3_gene_fusion_table make_count_table make_final_table extract_seq_from_fasta make_simple_read_table make_simple_read_table_assembly compile_results split_fusion_reads"
+commands="bpipe velveth velvetg oases trimmomatic samtools bowtie2 blat dedupe reformat  blastn bedtools minimap2 gffread_bin gtfToGenePred process_transcriptome_align_table make_3_gene_fusion_table make_count_table make_final_table extract_seq_from_fasta make_simple_read_table make_simple_read_table_assembly compile_results split_fusion_reads"
 
 #installation methods
 
@@ -22,6 +22,18 @@ function minimap2_install {
     cp minimap2-2.30_x64-linux/minimap2 bin/
 }
 
+
+function gffread_bin_install {
+    wget https://github.com/gpertea/gffread/releases/download/v0.12.7/gffread-0.12.7.Linux_x86_64.tar.gz
+    tar -xvf gffread-0.12.7.Linux_x86_64.tar.gz ; rm gffread-0.12.7.Linux_x86_64.tar.gz
+    cp gffread-0.12.7.Linux_x86_64/gffread bin/gffread_bin
+}
+
+function gtfToGenePred_install {
+    wget http://hgdownload.soe.ucsc.edu/admin/exe/linux.x86_64/gtfToGenePred
+    mv gtfToGenePred bin/
+    chmod +x bin/gtfToGenePred
+}
 
 function blastn_install {
     wget https://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/2.17.0/ncbi-blast-2.17.0+-x64-linux.tar.gz
@@ -163,6 +175,13 @@ for c in $commands ; do
     echo "$c=\"$c_path\"" >> ../tools.groovy
 done
 
+#prepare_ref_helper is used by the reference-prep script (prepare_jaffa_reference.sh),
+#not by the main pipeline, so it isn't in tools.groovy
+if [ ! -x bin/prepare_ref_helper ] ; then
+    echo "prepare_ref_helper not found, compiling it"
+    g++ -std=c++11 -O2 -o bin/prepare_ref_helper ../src/prepare_ref_helper.c++
+fi
+
 #loop through commands to check they are all installed
 echo "Checking that all required tools were installed:"
 Final_message="All commands installed successfully!"
@@ -183,6 +202,4 @@ echo "**********************************************************"
 echo $Final_message
 
 exit $exit_code
-
-
 

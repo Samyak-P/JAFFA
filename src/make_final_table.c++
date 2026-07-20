@@ -90,6 +90,25 @@ static inline bool contains(const std::string& s, const std::string& pat) {
   return s.find(pat) != std::string::npos;
 }
 
+static std::set<std::string> parse_exclude_chroms(const std::string& csv){
+  static const std::set<std::string> default_mito_names = {
+    "chrM", "chrMT", "MT", "M", "chrMito", "mitochondrion", "Mito", "MtDNA"
+  };
+  if(csv.empty()) return default_mito_names;
+  std::set<std::string> result;
+  std::stringstream ss(csv);
+  std::string item;
+  while(std::getline(ss, item, ',')){
+    if(!item.empty()) result.insert(item);
+  }
+  if(result.empty()) return default_mito_names;
+  return result;
+}
+
+static inline bool is_excluded_chrom(const std::string& c, const std::set<std::string>& excluded) {
+  return excluded.count(c) > 0;
+}
+
 static inline std::vector<int> split_ints_csv(const std::string& s) {
   std::vector<int> out;
   std::vector<std::string> toks = split(s, ',', true);
@@ -286,6 +305,15 @@ static std::vector<AnnoRow> read_annotation_table(const std::string& path) {
   if (!has("txStart") || !has("txEnd"))
     throw std::runtime_error("Annotation missing txStart/txEnd (or chromStart/chromEnd)");
 
+  // ---- Guard against missing gene-symbol column ----
+  // Fall back to the transcript 'name' column instead of indexing f[-1]
+  // (undefined behavior) when 'name2' is absent.
+  if (!has("name2") && !has("name"))
+    throw std::runtime_error("Annotation has neither 'name2' nor 'name' column -- cannot determine gene symbols.");
+  if (!has("name2"))
+    std::cerr << "[WARNING] Annotation has no 'name2' (gene symbol) column; using 'name' as gene symbol instead.\n";
+  const int i_name2 = has("name2") ? col["name2"] : col["name"];
+
   bool has_exonEnds   = has("exonEnds");
   bool has_exonStarts = has("exonStarts");
 
@@ -311,7 +339,7 @@ static std::vector<AnnoRow> read_annotation_table(const std::string& path) {
     r.chrom    = f[idx("chrom")];
     r.txStart  = to_ll(f[idx("txStart")]);
     r.txEnd    = to_ll(f[idx("txEnd")]);
-    r.name2    = f[idx("name2")];
+    r.name2    = f[i_name2];
     r.strand   = f[idx("strand")];
     r.exonFrames = f[idx("exonFrames")];
 
@@ -880,6 +908,17 @@ static std::vector<BreakHit> get_frame_info_for_pair(
 
   return res;
 }
+// Fallback label: use the gene symbol if we have one; otherwise fall back to
+// a synthesized "chrom:pos" location string, so downstream output never
+// silently drops a breakpoint that lacks an annotated gene_name (see devil
+// investigation: a meaningful fraction of transcripts in some non-model-
+// organism GTFs have no gene_name attribute at all -- this is not a bug,
+// just an annotation gap).
+static inline std::string gene_label(const BreakHit& h) {
+  if (!h.gene_name.empty()) return h.gene_name;
+  return h.genome_chrom + ":" + std::to_string(h.genome_pos);
+}
+
 
 static FinalRow format_positions(
     const std::vector<BreakHit>& x2,
@@ -928,7 +967,7 @@ static FinalRow format_positions(
 
   out.contig_break = std::min(h1.brk, h2.brk);
 
-  out.fusion_genes = h1.gene_name + "::" + h2.gene_name;
+  out.fusion_genes = gene_label(h1) + "::" + gene_label(h2);
   out.exon1 = h1.exons;
   out.exon2 = h2.exons;
   return out;
@@ -1047,13 +1086,14 @@ static void write_output(const std::string& path, const std::vector<FinalRow>& r
 
 int main(int argc, char** argv) {
   try {
-    if (argc != 13) {
+    if (argc != 14) {
       std::cerr
         << "Usage:\n"
         << "  " << argv[0]
         << " <blat.psl> <fusion_info.reads> <gene_counts> <trans_table>"
         << " <mitelman> <cosmic> <cosmic_tier> <gtex>"
-        << " <gapmin_bp> <exclude_csv> <MIN_REASSIGNMENT_BASE_DIFF> <output>\n";
+        << " <gapmin_bp> <exclude_csv> <MIN_REASSIGNMENT_BASE_DIFF>"
+        << " <exclude_chroms_csv> <output>\n";
       return 2;
     }
 
@@ -1069,7 +1109,9 @@ int main(int argc, char** argv) {
     const long long gapmin_bp = to_ll(argv[9], 0);
     const std::string exclude_csv = argv[10];
     const long long MIN_REASSIGNMENT_BASE_DIFF = to_ll(argv[11], 0);
-    const std::string output_file = argv[12];
+    const std::string exclude_chroms_csv = argv[12];
+    const std::string output_file = argv[13];
+    const std::set<std::string> excluded_chroms = parse_exclude_chroms(exclude_chroms_csv);
 
     std::cerr << "[INFO] Starting final fusion filtering\n";
     
@@ -1275,7 +1317,7 @@ int main(int argc, char** argv) {
       std::vector<FinalRow> tmp;
       tmp.reserve(cand.size());
       for (size_t i = 0; i < cand.size(); ++i) {
-        if (cand[i].chrom1 == "chrM" || cand[i].chrom2 == "chrM") continue;
+        if (is_excluded_chrom(cand[i].chrom1, excluded_chroms) || is_excluded_chrom(cand[i].chrom2, excluded_chroms)) continue;
         tmp.push_back(cand[i]);
       }
       cand.swap(tmp);

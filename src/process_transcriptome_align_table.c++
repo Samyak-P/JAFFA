@@ -11,6 +11,8 @@
  ** 
  ** Parses a .paf style alignment table and report inital candidate fusions
  **
+ ** Modified: 2026 - added extract_trans_id() and --skip-unmatched for
+ ** reference-format-agnostic transcript ID resolution.
  ** Author: Nadia Davidson
  ** Modified: 2026
  **/ 
@@ -25,7 +27,6 @@
 #include <algorithm>
 #include <regex>
 #include <stdlib.h>
-#include <algorithm>    
 #include <unordered_set>
 #include <cstring>
 
@@ -38,12 +39,15 @@ void print_usage(){
   cerr << "Usage: process_transcriptome_blat_table <blat table> <gap size> <ref_table> <gene name prefix regex> > <out table>" << endl;
   cerr << "Optional flags:\n"
      << "  --max-read-gap <int>       Max allowed gap on read (default 30)\n"
-     << "  --max-read-overlap <int>   Max allowed overlap on read (default 15)\n";
+     << "  --max-read-overlap <int>   Max allowed overlap on read (default 15)\n"
+     << "  --skip-unmatched           Skip reads with unmatched transcript IDs\n"
+     << "                             instead of exiting (default: off)\n";
   cerr << endl;
 }
 
 int max_read_overlap=15 ; //maximum number of bases that both genes can share
 int max_read_gap=30 ; //maximum gap between genes can share
+bool skip_unmatched=false ;
 
 //class to hold genomic position information
 class Position {
@@ -94,8 +98,8 @@ template <typename T> vector<T> remove_redundant( vector<T> unreduced ){
     for(int b=0; b < unreduced.size(); ++b){
       if(a==b) continue;
       if(unreduced[a].start<=unreduced[b].start && unreduced[a].end>=unreduced[b].end){
-	unreduced.erase(unreduced.begin()+b);
-	return(remove_redundant(unreduced));
+        unreduced.erase(unreduced.begin()+b);
+        return(remove_redundant(unreduced));
       }
     }
   }
@@ -114,7 +118,6 @@ template <typename T> vector<T> reduce(vector<T> unreduced){
   vector<int> index_to_keep;
   //sort vector
   sort(unreduced.begin(), unreduced.end(),[](T const& lhs, T const& rhs) { return lhs.start < rhs.start; }); 
-
   //loop through and find overlaps
   index_to_keep.push_back(0);
   int current=0;
@@ -142,10 +145,48 @@ template <typename T> vector<T> reduce(vector<T> unreduced){
    and if they are it will print relevant information for latter steps in JAFFA.
    This method does the brunt of work in filtering alignments to detect fusions.
 **/
+string extract_trans_id(const string& subject_id, const string& anno_prefix,
+                        const regex& anno_re,
+                        const map<string,Position>& gene_positions){
+  // Strategy 1: anno_prefix regex, accepted only if it resolves against the
+  // reference table (a greedy "(.*)" always matches but rarely yields a real
+  // ID, so an unchecked match cannot be trusted). anno_re is precompiled once
+  // in main() -- the pattern is constant for the run, so we never reconstruct
+  // it here per read.
+  if(anno_prefix != ""){
+    smatch m;
+    if(regex_search(subject_id, m, anno_re) && m.size() > 1){
+      string candidate = m[1].str();
+      if(gene_positions.find(candidate) != gene_positions.end())
+        return candidate;
+    }
+  }
+  // Strategy 2: legacy UCSC-style headers with embedded __range= coords.
+  size_t range_pos = subject_id.find("__range=");
+  if(range_pos != string::npos){
+    string before_range = subject_id.substr(0, range_pos);
+    size_t last_underscore = before_range.rfind('_');
+    if(last_underscore != string::npos){
+      string candidate = before_range.substr(last_underscore+1);
+      if(gene_positions.find(candidate) != gene_positions.end())
+        return candidate;
+    }
+    if(gene_positions.find(before_range) != gene_positions.end())
+      return before_range;
+    if(last_underscore != string::npos)
+      return before_range.substr(last_underscore+1);
+    return before_range;
+  }
+  // Strategy 3: clean-header convention (prepare_ref_helper / wiki-recipe
+  // builds) -- plain ">transcriptID" with no embedded coordinates.
+  return subject_id;
+}
+
 void multi_gene(vector<Alignment> this_al,
-		const map<string, Position> & gene_positions,
-		int gap_size,
-		string anno_prefix){
+                const map<string, Position> & gene_positions,
+                int gap_size,
+                string anno_prefix,
+                const regex& anno_re){
 
   //if it only matches one transcript, return
   if(this_al.size()<2) return;
@@ -162,15 +203,15 @@ void multi_gene(vector<Alignment> this_al,
   for(int a=0; a < this_al.size() ; a++){
     if(this_al[a].start==min && this_al[a].end==max) return;
   }
-
   //sort alignments by gene id to take away some randomness to which transcript
   //gets assigned to the fusion.
   sort(this_al.begin(),this_al.end(),[](Alignment const& lhs, Alignment const& rhs) { 
       return ((lhs.q_id).get_name()) < ((rhs.q_id).get_name()); });
-
+  
   //now get just the non-redundant set of transcript alignments
   vector<Alignment> regions=remove_redundant(this_al);
   
+
   //what do these alignments correspond to in the genome?
   vector< string > gene_names; //actually these are the transcript IDs
   map< string, string > gene_name_lookup; //maps trans ids to gene symbols 
@@ -178,15 +219,22 @@ void multi_gene(vector<Alignment> this_al,
 
   for(int a=0; a<regions.size(); a++){
     string trans_id=regions[a].q_id.get_name();
-    if(regex_search(trans_id,m,regex(anno_prefix))){ 
-	gene_names.push_back(m[1].str());
-	gene_name_lookup[trans_id]=gene_positions.at(m[1].str()).gene;
+    string extracted_id=extract_trans_id(trans_id, anno_prefix, anno_re, gene_positions);
+    if(gene_positions.find(extracted_id) != gene_positions.end()){
+        gene_names.push_back(extracted_id);
+        gene_name_lookup[trans_id]=gene_positions.at(extracted_id).gene;
     } else {
-      cerr << "Error: gene name prefix, " << anno_prefix ;
-      cerr << "doesn't match gene names. Exiting" << endl;
-      exit(1);
-      //	gene_names.push_back(trans_id);
-      //	gene_name_lookup[trans_id]=gene_positions.at(trans_id).gene;
+      if(skip_unmatched){
+        cerr << "Warning: could not resolve transcript ID '" << trans_id
+             << "' (extracted: '" << extracted_id << "') against reference table. Skipping read." << endl;
+        return;
+      } else {
+        cerr << "Error: gene name prefix, " << anno_prefix
+             << " doesn't match gene names, and transcript ID '" << trans_id
+             << "' could not be resolved against the reference table. Exiting."
+             << " (use --skip-unmatched to skip these reads instead)" << endl;
+        exit(1);
+      }
      }
       
   //split by chrom
@@ -194,9 +242,15 @@ void multi_gene(vector<Alignment> this_al,
   vector<Position> gp;
   for(int i=0 ; i < gene_names.size() ; ++i){
     const string trans=gene_names.at(i);
-    if(gene_positions.find(trans) == gene_positions.end()){ //throw an error if transcript id not found...
-      cerr << "Could not find transcript ID: " << trans << " in reference table. Ignoring chimera." << endl;
-      exit(1);
+    if(gene_positions.find(trans) == gene_positions.end()){
+      if(skip_unmatched){
+        cerr << "Warning: could not find transcript ID: " << trans << " in reference table. Ignoring chimera." << endl;
+        return;
+      } else {
+        cerr << "Could not find transcript ID: " << trans << " in reference table. Exiting."
+             << " (use --skip-unmatched to skip these reads instead)" << endl;
+        exit(1);
+      }
     } 
     string gp_chrom=gene_positions.at(trans).chrom; 
     //if(gp_chrom=="chrM") return; //likely false chimera from library prep or other artificat if fusion involved chrM
@@ -215,25 +269,25 @@ void multi_gene(vector<Alignment> this_al,
       //add extra bases to the end of each gene to check if they are close together/same gene?
       vector<Position> ir;
       for(int s=0; s<sc.size(); ++s){
-	Position new_pos(gp[sc[s]].chrom,gp[sc[s]].start,gp[sc[s]].end+gap_size,"");
-	ir.push_back(new_pos);
+        Position new_pos(gp[sc[s]].chrom,gp[sc[s]].start,gp[sc[s]].end+gap_size,"");
+        ir.push_back(new_pos);
       }
       vector<Position> iru = reduce(ir);
       //merge alignments if the genes in the genome are close together
       //loop over reduced regions. Collect transcripts that overlaps and merge alignment
       for(int r=0 ; r < iru.size() ; ++r){
-	vector<Alignment> regions_w;
-	for(int s=0; s < ir.size() ; ++s){
-	  if(ir[s].start>=iru[r].start && ir[s].end<=iru[r].end)
-	    regions_w.push_back(regions[sc[s]]);
-	} //add to merged set of alignment ranges
-	vector<Alignment> reduced_region_w=reduce(regions_w);
-	new_ranges.insert( new_ranges.end(), reduced_region_w.begin(), reduced_region_w.end() );
+        vector<Alignment> regions_w;
+        for(int s=0; s < ir.size() ; ++s){
+          if(ir[s].start>=iru[r].start && ir[s].end<=iru[r].end)
+            regions_w.push_back(regions[sc[s]]);
+        }//add to merged set of alignment ranges
+        vector<Alignment> reduced_region_w=reduce(regions_w);
+        new_ranges.insert( new_ranges.end(), reduced_region_w.begin(), reduced_region_w.end() );
       }
     }
   }
   sort(new_ranges.begin(), new_ranges.end(),[](Alignment const& lhs,Alignment const& rhs) { return lhs.start < rhs.start; });
-
+  
   // find overlaps. continue until we find one that meets the criteria (small or no overlap)
   for(int i=0; i< new_ranges.size()-1; ++i){
     int start=i;
@@ -241,27 +295,26 @@ void multi_gene(vector<Alignment> this_al,
     if(new_ranges[start].strand==new_ranges[end].strand &&
        new_ranges[start].end-new_ranges[end].start <= max_read_overlap &&
        new_ranges[end].start-new_ranges[start].end <= max_read_gap ){ 
-
       //define the start and end based on strand
-      if(new_ranges[start].strand=="-" || new_ranges[start].strand=="minus" ){ //account for minimap or blast style strand info
-	start=i+1; end=i;
+      if(new_ranges[start].strand=="-" || new_ranges[start].strand=="minus" ){//account for minimap or blast style strand info
+        start=i+1; end=i;
       }
       // check they aren't from the same gene
       string gene1=gene_name_lookup[new_ranges[start].q_id.get_name()];
       string gene2=gene_name_lookup[new_ranges[end].q_id.get_name()];
       if(gene1!=gene2){ //can't be back splicing within the same gene
-	cout << new_ranges[start].t_id.get_name() << "\t" //print candidate
-	     << std::min(new_ranges[i].end,new_ranges[i+1].start)-1 << "\t" 
-	     << std::max(new_ranges[i].end,new_ranges[i+1].start)+1 << "\t"
-	     << gene1 << ":" << gene2 << "\t"
-	     << new_ranges[start].t_length << "\t"
-	     << new_ranges[start].q_id.get_name() << "\t" 
-	     << new_ranges[start].t_end << "\t"
-	     << new_ranges[end].q_id.get_name() << "\t"
-	     << new_ranges[end].t_start << "\t"
-	     << new_ranges[i].end << "\t"
-	     << new_ranges[i+1].start << "\t"
-	     << new_ranges[end].strand << endl;
+        cout << new_ranges[start].t_id.get_name() << "\t" //print candidate
+             << std::min(new_ranges[i].end,new_ranges[i+1].start)-1 << "\t" 
+             << std::max(new_ranges[i].end,new_ranges[i+1].start)+1 << "\t"
+             << gene1 << ":" << gene2 << "\t"
+             << new_ranges[start].t_length << "\t"
+             << new_ranges[start].q_id.get_name() << "\t" 
+             << new_ranges[start].t_end << "\t"
+             << new_ranges[end].q_id.get_name() << "\t"
+             << new_ranges[end].t_start << "\t"
+             << new_ranges[i].end << "\t"
+             << new_ranges[i+1].start << "\t"
+             << new_ranges[end].strand << endl;
       }
     }
   }
@@ -269,8 +322,6 @@ void multi_gene(vector<Alignment> this_al,
   }
 }
   
-
-
 // Main does the I/O and call multi_gene for each read and its associated
 // set of transcript alignments.
 int main(int argc, char **argv){
@@ -288,19 +339,23 @@ int main(int argc, char **argv){
       else if (strcmp(argv[i], "--max-read-overlap") == 0 && i + 1 < argc) {
           max_read_overlap = atoi(argv[++i]);
       }
+      else if (strcmp(argv[i], "--skip-unmatched") == 0) {
+          skip_unmatched = true;
+      }
   }
   // log the parameters being used for the filtering
-  printf("Using max-read-gap of %d and max-read-overlap of %d\n", max_read_gap, max_read_overlap);
+  printf("Using max-read-gap of %d and max-read-overlap of %d (skip-unmatched=%s)\n",
+         max_read_gap, max_read_overlap, skip_unmatched ? "on" : "off");
   //minimum gap size in genome is argv[2]
   int gap_size=atoi(argv[2]);
-  
   //prefix of the gene names in the annotation file (regex pattern)
   string anno_prefix=argv[4];
-  
-  //get the gene names and positions
-  /** 
-   ** Now read in the gene to transcript ID mapping 
-   **/
+  // Compile the anno_prefix regex once; it is constant for the whole run and
+  // is reused across every read (see extract_trans_id). Guarded so an empty
+  // pattern is never compiled/used (extract_trans_id skips it when empty).
+  regex anno_re;
+  if(!anno_prefix.empty()) anno_re = regex(anno_prefix);
+
   ifstream file; 
   file.open(argv[3]);
   if(!(file.good())){
@@ -344,7 +399,7 @@ int main(int argc, char **argv){
   }
   file.close();
   cerr << "Done reading in transcript IDs" << endl;
-
+  
   //Now load the .paf alignment file
   string filename=argv[1];
   file.open(filename);
@@ -352,6 +407,7 @@ int main(int argc, char **argv){
     cerr << "Unable to open file " << filename << endl;
     exit(1);
   } 
+
   /**********  Read all the alignments ****************/
   cerr << "Reading the input alignment file, "<< filename << endl;
   map<string,vector<Alignment> > split_results;
@@ -364,19 +420,18 @@ int main(int argc, char **argv){
     if(columns.size()<7){ 
       cerr << columns.size() ; 
       cerr << "Warning: unexpected number of columns in paf file, "
-	   << filename << endl; continue ; 
+           << filename << endl; continue ; 
     }
-
     Alignment al(atoi(columns[9].c_str()),
-		 columns[0],
-		 atoi(columns[1].c_str()),
-		 atoi(columns[2].c_str()),
-		 atoi(columns[3].c_str()),
-		 columns[5],
-		 atoi(columns[7].c_str()),
-		 atoi(columns[8].c_str()),
-		 columns[4]
-		 );
+                 columns[0],
+                 atoi(columns[1].c_str()),
+                 atoi(columns[2].c_str()),
+                 atoi(columns[3].c_str()),
+                 columns[5],
+                 atoi(columns[7].c_str()),
+                 atoi(columns[8].c_str()),
+                 columns[4]
+                 );
     
     split_results[columns[0]].push_back(al);
   }
@@ -386,7 +441,7 @@ int main(int argc, char **argv){
   map< string , vector<Alignment> >:: iterator itr =  split_results.begin();
   int i=0;
   for(; itr!=split_results.end(); itr++){
-    multi_gene(itr->second, gene_positions, gap_size, anno_prefix);
+    multi_gene(itr->second, gene_positions, gap_size, anno_prefix, anno_re);
     if(i%1000000 == 0  ) cerr << i << endl;
     i++;
   }
