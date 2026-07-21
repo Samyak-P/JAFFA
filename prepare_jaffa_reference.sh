@@ -32,7 +32,9 @@ set -euo pipefail
 #
 # Usage:
 #   bash prepare_jaffa_reference.sh \
-#       <JAFFA_PATH> <REF_DIR> <GENOME_FA> <GENOME_NAME> <ANNOTATION_NAME> [THREADS]
+#       <JAFFA_PATH> <REF_DIR> <GENOME_NAME> <ANNOTATION_NAME> [THREADS]
+#
+# The genome FASTA is expected at <REF_DIR>/<GENOME_NAME>.fa
 #
 # THREADS is optional (default 1) and only affects bowtie2-build -- the
 # other tools here don't meaningfully parallelize at this scale.
@@ -47,18 +49,19 @@ set -euo pipefail
 #   anno_prefix="'(.*)'"
 
 usage() {
-  echo "Usage: $0 <JAFFA_PATH> <REF_DIR> <GENOME_FA> <GENOME_NAME> <ANNOTATION_NAME> [THREADS]"
+  echo "Usage: $0 <JAFFA_PATH> <REF_DIR> <GENOME_NAME> <ANNOTATION_NAME> [THREADS]"
   exit 1
 }
 
-[ $# -eq 5 ] || [ $# -eq 6 ] || usage
+[ $# -eq 4 ] || [ $# -eq 5 ] || usage
 
 JAFFA_PATH=$1
 REF_DIR=$2
-GENOME_FA=$3
-GENOME_NAME=$4
-ANNOTATION_NAME=$5
-THREADS=${6:-1}
+GENOME_NAME=$3
+ANNOTATION_NAME=$4
+THREADS=${5:-1}
+
+GENOME_FA=$REF_DIR/${GENOME_NAME}.fa
 
 TOOLS=$JAFFA_PATH/tools/bin
 HELPER=$TOOLS/prepare_ref_helper
