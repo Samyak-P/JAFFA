@@ -75,13 +75,17 @@ transLength=100 //the minimum length for Oases to report an assembled contig
 // for aligning to known genes using blastn
 //96% similar when we blat to the human transcriptome
 blast_options="-perc_identity 96"
+
 // number of lines from fasta to process at a time for blastn (#reads*2). This reduces the memory required.
 blast_batch_size=1000000
+
 //comma separated list of chromosomes to exclude from final fusion calls
 //(e.g. mitochondrial contigs). Override at runtime with -p excludeChroms=...
 excludeChroms="chrM,chrMT,MT,M,chrMito,mitochondrion,Mito,MtDNA"
+
 //pattern used to fetch transcript ID within reference transcritome FA
-anno_prefix="'(.*)'"
+//anno_prefix="'(.*)'"
+anno_prefix="\'V[[:alnum:]]+_(.+?)__range=\'" 
 
 //for aligning candidate fusions against the genome
 blat_options="-minIdentity=96 -minScore=30"

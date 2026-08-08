@@ -16,6 +16,7 @@
 #include <set>
 #include <vector>
 #include <unordered_map>
+#include <regex>
 #include <stdlib.h>
 
 using namespace std;
@@ -56,7 +57,8 @@ int main(int argc, char **argv){
     for(int i=3; i<14; i++) line_stream >> temp; //skip 11 columns
     string fname;
     line_stream >> fname;
-    for(int i=15; i<18; i++) line_stream >> temp; //skip 2 columns
+    fname = regex_replace(fname, std::regex("::"), ":");
+    for(int i=15; i<23; i++) line_stream >> temp; //skip 8 columns
     string classif;
     line_stream >> classif;
     if(fusion_map.find(fname)==fusion_map.end()){
